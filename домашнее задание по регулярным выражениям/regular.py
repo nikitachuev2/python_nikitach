@@ -25,7 +25,7 @@ def find_quotes(text):
     pattern = r"['\"]([^'\"]+)['\"]"  # Регулярное выражение для нахождения цитат в разных кавычках
     return re.findall(pattern, text)  # Возвращаем найденные цитаты
 
-# Пример использования
+
 if __name__ == "__main__":  # Обратите внимание, здесь должно быть __name__, а не name.
     file_path = 'example_tekst.txt'  # Путь к файлу с текстом
     content = open_file(file_path)  # Получаем содержимое файла
