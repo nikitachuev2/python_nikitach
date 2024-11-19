@@ -2,75 +2,82 @@
 import zipfile
 import os
 import dask.dataframe as dd
-from sqlalchemy import create_engine
+import matplotlib
+matplotlib.use('Agg')  # Используем бэкенд Agg для работы без графического интерфейса
+import matplotlib.pyplot as plt
 
-# Функция для разархивации ZIP файла
-def unzip_file(zip_path, extract_to):
-    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-        zip_ref.extractall(extract_to)
-    print(f"Файл {zip_path} был успешно разархивирован в {extract_to}")
+# Функция для извлечения содержимого ZIP файла
+def extract_zip(zip_filepath, output_directory):
+    with zipfile.ZipFile(zip_filepath, 'r') as zip_file:
+        zip_file.extractall(output_directory)
+    print(f"Файл {zip_filepath} успешно извлечен в {output_directory}")
 
 # Путь к ZIP файлу
-zip_file_path = 'recipes_full.zip'
-# Папка, куда будет разархивирован файл
-extract_directory = os.path.dirname(os.path.abspath(zip_file_path))
+zip_file_location = 'recipes_full.zip'
+# Определяем директорию для извлечения архива
+output_dir = os.path.dirname(os.path.abspath(zip_file_location))
+# Извлекаем файл
+extract_zip(zip_file_location, output_dir)
 
-# Создаем папку, если она не существует
-os.makedirs(extract_directory, exist_ok=True)
+# Путь к распакованным данным
+csv_folder = os.path.join(output_dir, 'recipes_full')
 
-# Разархивируем файл
-unzip_file(zip_file_path, extract_directory)
+# Загружаем все CSV файлы в Dask DataFrame с указанием типов данных
+dataframe = dd.read_csv(os.path.join(csv_folder, '*.csv'), dtype={'minutes': 'float64', 'n_steps': 'float64', 'submitted': 'str'})
 
-# Путь к загруженному CSV файлу, включая подпапку
-csv_directory = os.path.join(extract_directory, 'recipes_full')
+# Выводим информацию о Dask DataFrame
+print(f"Количество партиций: {dataframe.npartitions}")
+print("Типы столбцов:\n", dataframe.dtypes)
 
-# Читаем все CSV файлы из директории в Dask DataFrame с указанием типов данных
-df = dd.read_csv(os.path.join(csv_directory, '*.csv'), dtype={'minutes': 'float64', 'n_steps': 'float64'})
+# Выводим первые 5 и последние 5 записей таблицы
+print("Первые 5 записей:\n", dataframe.head())
+print("Последние 5 записей:\n", dataframe.tail())
 
-# Выводим метаинформацию о Dask DataFrame
-print(f"Число партий: {df.npartitions}")
-print("Типы столбцов:\n", df.dtypes)
+# Подсчет строк в каждой партиции
+for index in range(dataframe.npartitions):
+    print(f"Количество строк в партиции {index}: {dataframe.get_partition(index).shape[0].compute()}")
 
-# Выводим первые 5 и последние 5 строк таблицы
-print("Первые 5 строк:\n", df.head())
-print("Последние 5 строк:\n", df.tail())
+# Находим максимальное значение в столбце n_steps
+max_steps = dataframe['n_steps'].max()
+print("Максимальное значение в n_steps:", max_steps.compute())
 
-# Подсчёт строк в каждом блоке
-for i in range(df.npartitions):
-    print(f"Количество строк в блоке {i}: {df.get_partition(i).shape[0].compute()}")
+# Визуализируем график максимального количества шагов
+plt.figure(figsize=(8, 6))
+plt.bar(['Максимальные n_steps'], [max_steps.compute()], color='blue')
+plt.title('Максимальное количество шагов (n_steps)')
+plt.ylabel('Количество шагов')
+plt.savefig('dask_max_steps_count.png')
+plt.close()  # Закрываем фигуру
 
-# Находим максимум в столбце n_steps
-max_n_steps = df['n_steps'].max()
-print("Максимальное значение в n_steps:", max_n_steps.compute())
+# Подсчет количества отзывов с группировкой по месяцам добавления
+dataframe['submission_time'] = dd.to_datetime(dataframe['submitted'])  # Преобразуем дату подачи в формат даты
+monthly_reviews = dataframe.groupby(dataframe['submission_time'].dt.to_period('M')).size().compute()
+print(monthly_reviews)  # Выводим количество по месяцам
 
-# Подсчёт количества отзывов с группировкой по месяцам добавления
-reviews_per_month = df.groupby(df['submitted'].dt.to_period('M')).size().compute()
-print("Количество отзывов по месяцам:\n", reviews_per_month)
+# Находим пользователя, который отправлял рецепты чаще других
+most_active_user = dataframe['contributor_id'].value_counts().idxmax().compute()
+print(f"Пользователь, отправлявший рецепты чаще всех: {most_active_user}")
 
-# Находим пользователя, отправлявшего рецепты чаще всех
-top_user = df['contributor_id'].value_counts().idxmax().compute()
-print(f"Пользователь, отправлявший рецепты чаще всех: {top_user}")
+# Первый и последний рецепт
+latest_recipe = dataframe.nlargest(1, 'submission_time').compute()
+print(f'Последний по дате рецепт: \n{latest_recipe}')
+earliest_recipe = dataframe.loc[dataframe['submission_time'] == dataframe['submission_time'].min()].compute()
+print(f'Первые по дате подачи рецепты: \n{earliest_recipe}')
 
-# Находим самый первый и самый последний по дате отправления рецепт
-first_recipe = df.loc[df['submitted'].idxmin()].compute()  # idxmin() будет работать только с стандартным DataFrame
-last_recipe = df.loc[df['submitted'].idxmax()].compute()
-print(f"Самый первый рецепт:\n{first_recipe}\n")
-print(f"Самый последний рецепт:\n{last_recipe}\n")
+# Загружаем рецепты в базу данных 
+database_connection_string = 'sqlite:///recipes.db'  # Строка подключения  
+dataframe.to_sql('recipes', database_connection_string, if_exists='replace', index=False)  # Заменяем таблицу, если она существует
+print("Данные успешно загружены в SQLite.")
 
-# Создаем соединение с базой данных SQLite
-engine = create_engine('sqlite:///recipes.db')
+median_cooking_time = dataframe['minutes'].median_approximate().compute()  # Вычисляем медиану времени приготовления
+average_steps = dataframe['n_steps'].mean().compute()      # Вычисляем среднее количество шагов
 
-# Загружаем рецепты в базу данных SQLite
-df.to_sql('recipes', engine, if_exists='replace', index=False)
+# Загрузка данных из таблицы recipes с использованием строки подключения
+loaded_dataframe = dd.read_sql_table('recipes', database_connection_string, index_col='id')
 
-# Отбор рецептов с временем приготовления меньше медианы и количеством шагов меньше среднего
-median_time = df['minutes'].median().compute()  # Вычисляем медиану времени приготовления
-mean_steps = df['n_steps'].mean().compute()      # Вычисляем среднее количество шагов
+# Фильтрация данных
+filtered_dataframe = loaded_dataframe[(loaded_dataframe['minutes'] < median_cooking_time) & (loaded_dataframe['n_steps'] < average_steps)]
 
-# Фильтруем DataFrame
-filtered_recipes = df[(df['minutes'] < median_time) & (df['n_steps'] < mean_steps)]
-
-# Сохраняем отобранные рецепты в файл .csv
-filtered_recipes.to_csv('filtered_recipes.csv', single_file=True, index=False)  # Сохраняем в один файл
-
-print(f"Отобранное количество рецептов: {len(filtered_recipes)}")
+# Сохраняем отфильтрованные данные в один CSV-файл
+filtered_dataframe.to_csv('filtered_recipes.csv', single_file=True, index=False) 
+print("Отфильтрованные рецепты сохранены в filtered_recipes.csv.")
