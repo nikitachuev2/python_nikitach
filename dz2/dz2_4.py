@@ -5,7 +5,7 @@ num_items = int(input("Введите количество элементов в
 for _ in range(num_items):
     key = input(f"Введите ключ {len(input_dict) + 1}: ")
     value = input(f"Введите значение для ключа {key}: ")
-    input_dict[key] = value
+        input_dict[key] = value
 
 # Создание нового словаря с перевернутыми ключами и значениями
 output_dict = {}
